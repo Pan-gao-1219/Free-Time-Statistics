@@ -136,7 +136,7 @@ TOTAL_WEEKS  = 17
 DAY_MAP  = {"周一":0,"周二":1,"周三":2,"周四":3,"周五":4,"周六":5,"周日":6}
 DAY_NAMES = ["周一","周二","周三","周四","周五","周六","周日"]
 
-SLOT_RE = re.compile(r"(周[一二三四五六日])第([\d、，,\-–]+)节\{第([\d,，\-–\s]+)周\}")
+SLOT_RE = re.compile(r'(周[一二三四五六日])第([^节]+)节\{第([^}]+)周\}')
 PSPLIT  = re.compile(r"[、，,]")
 PRANGE  = re.compile(r"(\d+)\s*[-–]\s*(\d+)")
 WSPLIT  = re.compile(r"[,，]")
@@ -145,8 +145,9 @@ WRANGE  = re.compile(r"(\d+)\s*[-–]\s*(\d+)")
 CACHE_DIR = Path(tempfile.gettempdir()) / "schedule_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# 工具函数
+# 工具函数 - 修复版
 # ─────────────────────────────────────────────────────────────────────────────
 def file_md5(path: str) -> str:
     h = hashlib.md5()
@@ -155,47 +156,75 @@ def file_md5(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
 def parse_periods(period_str: str) -> list:
     """解析节次字符串，支持逗号列表（7、8、9）和范围（7-9）两种格式"""
     periods = []
-    for part in PSPLIT.split(period_str):
+    # 先清理字符串
+    period_str = period_str.strip()
+    if not period_str:
+        return []
+
+    # 分割多个节次（支持中文顿号、英文逗号）
+    for part in re.split(r'[、，,\s]+', period_str):
         part = part.strip()
         if not part:
             continue
-        m = PRANGE.match(part)
-        if m:
-            periods.extend(range(int(m.group(1)), int(m.group(2)) + 1))
+
+        # 检查是否是范围（如 7-9 或 7–9）
+        range_match = re.match(r'(\d+)\s*[-–]\s*(\d+)', part)
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2))
+            periods.extend(range(start, end + 1))
         else:
             try:
                 periods.append(int(part))
             except ValueError:
-                pass
+                continue
+
+    # 过滤有效节次范围
     return [p for p in periods if 1 <= p <= 12]
-    weeks: set = set()
-    for part in WSPLIT.split(week_str):
+
+
+def parse_weeks(week_str: str) -> set:
+    """解析周次字符串，返回周次集合"""
+    weeks = set()
+    week_str = week_str.strip()
+    if not week_str:
+        return weeks
+
+    # 分割多个周次（支持中文顿号、英文逗号）
+    for part in re.split(r'[、，,\s]+', week_str):
         part = part.strip()
         if not part:
             continue
-        m = WRANGE.match(part)
-        if m:
-            weeks.update(range(int(m.group(1)), int(m.group(2)) + 1))
+
+        # 检查是否是范围（如 1-17 或 1–17）
+        range_match = re.match(r'(\d+)\s*[-–]\s*(\d+)', part)
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2))
+            weeks.update(range(start, end + 1))
         else:
             try:
                 weeks.add(int(part))
             except ValueError:
-                pass
+                continue
+
+    # 限制在有效周次范围内
     return weeks & set(range(1, TOTAL_WEEKS + 1))
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 逐行解析 XLSX（openpyxl 流模式，低内存）
 # ─────────────────────────────────────────────────────────────────────────────
 def parse_xlsx(xlsx_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
-    """
-    解析单个 XLSX。返回 (occ[TOTAL_WEEKS,7,12], issues)。
-    使用 openpyxl read_only 模式逐行读取，避免全量加载。
-    结果会缓存到磁盘（基于文件 MD5）。
-    """
-    # ── 磁盘缓存检查 ──
+    """解析单个 XLSX"""
+    print(f"正在解析 XLSX 文件: {xlsx_path}")
+
+    # 磁盘缓存检查
     cache_key = file_md5(xlsx_path)
     cache_path = CACHE_DIR / f"{cache_key}.pkl"
     if cache_path.exists():
@@ -250,7 +279,7 @@ def parse_xlsx(xlsx_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
                 if not m:
                     if part and re.search(r'周[一二三四五六日]', part):
                         unmatched += 1
-                    return
+                    continue  # 继续处理下一个 part
                 day_name = m.group(1)
                 if day_name not in DAY_MAP:
                     continue
@@ -292,8 +321,8 @@ def parse_xlsx(xlsx_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
     return result
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 解析 .xls（旧版 Excel，需要 xlrd >= 2.0.1）
+## ─────────────────────────────────────────────────────────────────────────────
+# 解析 .xls（旧版 Excel，需要 xlrd >= 2.0.1）- 修复版
 # ─────────────────────────────────────────────────────────────────────────────
 def parse_xls(xls_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
     """
@@ -318,55 +347,109 @@ def parse_xls(xls_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
     col_idx: Optional[int] = None
 
     try:
+        # 打印调试信息
+        print(f"正在解析 XLS 文件: {xls_path}")
+
         wb = xlrd.open_workbook(xls_path)
         ws = wb.sheet_by_index(0)
+
+        print(f"工作表名称: {ws.name}, 行数: {ws.nrows}, 列数: {ws.ncols}")
 
         if ws.nrows < 1:
             return None, ["文件为空"]
 
-        # 自动扫描前5行寻找"上课时间"列（兼容有/无合并标题行的 xls）
+        # 自动扫描前10行寻找"上课时间"列
         header_row_idx = None
-        for try_row in range(min(5, ws.nrows)):
-            for c in range(ws.ncols):
-                if "上课时间" in str(ws.cell_value(try_row, c)):
+        for try_row in range(min(10, ws.nrows)):
+            row_values = ws.row_values(try_row)
+            for c, cell_val in enumerate(row_values):
+                if cell_val and "上课时间" in str(cell_val):
                     col_idx = c
                     header_row_idx = try_row
+                    print(f"找到'上课时间'列在第 {try_row+1} 行, 第 {c+1} 列")
                     break
             if col_idx is not None:
                 break
 
         if col_idx is None:
-            return None, [f"未找到'上课时间'列（已扫描前{min(5,ws.nrows)}行）"]
+            return None, [f"未找到'上课时间'列（已扫描前{min(10,ws.nrows)}行）"]
 
+        # 从标题行下一行开始解析
         data_start_row = header_row_idx + 1
         unmatched = 0
+        parsed_count = 0
+
         for r in range(data_start_row, ws.nrows):
-            cell_val = ws.cell_value(r, col_idx)
-            if not cell_val:
+            row_values = ws.row_values(r)
+            if col_idx >= len(row_values):
                 continue
-            for part in str(cell_val).split(";"):
+
+            cell_val = row_values[col_idx]
+            if not cell_val or str(cell_val).strip() == "":
+                continue
+
+            # 处理单元格内容
+            cell_str = str(cell_val).strip()
+            print(f"行 {r+1}: {cell_str[:50]}...")  # 打印前50个字符调试
+
+            # 分割多个课程（如果有分号）
+            for part in cell_str.split(";"):
                 part = part.strip()
-                m = SLOT_RE.search(part)
+                if not part:
+                    continue
+
+                # 使用更宽松的正则表达式
+                # 支持格式：周一第7-9节{第1,3,5,7,9,11,13,15,17周}
+                # 或者：周一第7、8节{第2,4,6,8,10,12,14,16周}
+                m = re.search(r'(周[一二三四五六日])第([^节]+)节\{第([^}]+)周\}', part)
+                if not m:
+                    # 尝试其他可能的格式
+                    m = re.search(r'(周[一二三四五六日])第([^\{]+)\{第([^\}]+)\}', part)
+
                 if not m:
                     if part and re.search(r'周[一二三四五六日]', part):
                         unmatched += 1
+                        print(f"  无法解析: {part}")
                     continue
+
                 day_name = m.group(1)
                 if day_name not in DAY_MAP:
+                    print(f"  未知星期: {day_name}")
                     continue
+
                 day = DAY_MAP[day_name]
-                periods = parse_periods(m.group(2))
-                weeks = parse_weeks(m.group(3))
+                period_str = m.group(2).strip()
+                week_str = m.group(3).strip()
+
+                # 解析节次
+                periods = parse_periods(period_str)
+                if not periods:
+                    print(f"  无法解析节次: {period_str}")
+                    continue
+
+                # 解析周次
+                weeks = parse_weeks(week_str)
+                if not weeks:
+                    print(f"  无法解析周次: {week_str}")
+                    continue
+
+                # 标记占用
                 for wk in weeks:
                     for p in periods:
                         if 1 <= p <= 12:
                             occ[wk - 1, day, p - 1] = True
+                            parsed_count += 1
+
+        print(f"解析完成: 成功解析 {parsed_count} 个课程时段, 无法解析 {unmatched} 个片段")
 
     except Exception as e:
-        return None, [f"读取失败: {e}"]
+        import traceback
+        traceback.print_exc()
+        return None, [f"读取失败: {str(e)}"]
 
     if unmatched:
         issues.append(f"有 {unmatched} 个时间片段格式不匹配")
+
     total_slots = int(occ.sum())
     if total_slots == 0:
         issues.append("课表节次全为零，可能格式异常")
@@ -381,7 +464,6 @@ def parse_xls(xls_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
         pass
 
     return result
-
 
 def parse_file(file_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
     """根据扩展名自动分发到对应解析器"""
@@ -952,8 +1034,23 @@ def collect_xlsx_from_files(uploaded_files) -> Tuple[str, List[Tuple[str, str]]]
         dest = os.path.join(tmp, uf.name)
         with open(dest, "wb") as f:
             f.write(uf.getvalue())
-        if Path(uf.name).suffix.lower() in (".xlsx", ".xls") and not uf.name.startswith("~$"):
-            paths.append((Path(uf.name).stem, dest))
+
+        # 检查文件扩展名
+        ext = Path(uf.name).suffix.lower()
+        if ext in (".xlsx", ".xls") and not uf.name.startswith("~$"):
+            # 验证文件是否可读
+            try:
+                if ext == ".xls" and _XLRD_OK:
+                    # 尝试打开XLS文件验证
+                    xlrd.open_workbook(dest)
+                paths.append((Path(uf.name).stem, dest))
+                print(f"成功添加文件: {uf.name}")
+            except Exception as e:
+                print(f"文件验证失败 {uf.name}: {e}")
+                st.warning(f"文件 {uf.name} 可能已损坏，将跳过")
+        else:
+            print(f"跳过不支持的文件: {uf.name} (扩展名: {ext})")
+
     return tmp, paths
 
 
