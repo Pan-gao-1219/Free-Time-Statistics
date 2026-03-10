@@ -10,7 +10,7 @@ xlsxwriter>=3.1.0
 
 # 科学计算
 scipy>=1.10.0
-
+xlrd>=2.0.1
 # 可视化（用于 PNG 导出）
 matplotlib>=3.7.0
 
