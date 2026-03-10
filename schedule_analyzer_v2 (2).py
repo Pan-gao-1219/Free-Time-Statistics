@@ -136,8 +136,9 @@ TOTAL_WEEKS  = 17
 DAY_MAP  = {"周一":0,"周二":1,"周三":2,"周四":3,"周五":4,"周六":5,"周日":6}
 DAY_NAMES = ["周一","周二","周三","周四","周五","周六","周日"]
 
-SLOT_RE = re.compile(r"(周[一二三四五六日])第([\d、，,]+)节\{第([\d,，\-–\s]+)周\}")
+SLOT_RE = re.compile(r"(周[一二三四五六日])第([\d、，,\-–]+)节\{第([\d,，\-–\s]+)周\}")
 PSPLIT  = re.compile(r"[、，,]")
+PRANGE  = re.compile(r"(\d+)\s*[-–]\s*(\d+)")
 WSPLIT  = re.compile(r"[,，]")
 WRANGE  = re.compile(r"(\d+)\s*[-–]\s*(\d+)")
 
@@ -154,7 +155,22 @@ def file_md5(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
-def parse_weeks(week_str: str) -> set:
+def parse_periods(period_str: str) -> list:
+    """解析节次字符串，支持逗号列表（7、8、9）和范围（7-9）两种格式"""
+    periods = []
+    for part in PSPLIT.split(period_str):
+        part = part.strip()
+        if not part:
+            continue
+        m = PRANGE.match(part)
+        if m:
+            periods.extend(range(int(m.group(1)), int(m.group(2)) + 1))
+        else:
+            try:
+                periods.append(int(part))
+            except ValueError:
+                pass
+    return [p for p in periods if 1 <= p <= 12]
     weeks: set = set()
     for part in WSPLIT.split(week_str):
         part = part.strip()
@@ -239,7 +255,7 @@ def parse_xlsx(xlsx_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
                 if day_name not in DAY_MAP:
                     continue
                 day = DAY_MAP[day_name]
-                periods = [int(x) for x in PSPLIT.split(m.group(2)) if x.strip().isdigit()]
+                periods = parse_periods(m.group(2))
                 weeks = parse_weeks(m.group(3))
                 for wk in weeks:
                     for p in periods:
@@ -327,7 +343,7 @@ def parse_xls(xls_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
                 if day_name not in DAY_MAP:
                     continue
                 day = DAY_MAP[day_name]
-                periods = [int(x) for x in PSPLIT.split(m.group(2)) if x.strip().isdigit()]
+                periods = parse_periods(m.group(2))
                 weeks = parse_weeks(m.group(3))
                 for wk in weeks:
                     for p in periods:
@@ -1100,17 +1116,17 @@ def main():
 
         # Tab 0: 空闲率趋势
         with tabs[0]:
-            st.plotly_chart(chart_weekly_trend(free4d, n), use_container_width=True)
+            st.plotly_chart(chart_weekly_trend(free4d, n), width="stretch")
             sel_w = st.selectbox("选择周次（雷达图）", range(1, TOTAL_WEEKS+1),
                                  format_func=lambda x: f"第{x}周", key="radar_week")
-            st.plotly_chart(chart_radar(free4d, sel_w - 1), use_container_width=True)
+            st.plotly_chart(chart_radar(free4d, sel_w - 1), width="stretch")
 
         # Tab 1: 周度热力图
         with tabs[1]:
             opts = ["17周平均值"] + [f"第{w}周" for w in range(1, TOTAL_WEEKS+1)]
             sel = st.selectbox("查看周次", opts, key="heatmap_week")
             wk  = None if sel == "17周平均值" else int(sel[1:-1]) - 1
-            st.plotly_chart(chart_heatmap(free4d, n, wk), use_container_width=True)
+            st.plotly_chart(chart_heatmap(free4d, n, wk), width="stretch")
 
             if wk is not None:
                 st.markdown(f"#### 第{wk+1}周 空闲时段明细")
@@ -1123,17 +1139,17 @@ def main():
                                          "时间": f"{PERIOD_TIMES[p+1][0]}–{PERIOD_TIMES[p+1][1]}",
                                          "空余人数": v, "空余率": f"{v/n*100:.1f}%"})
                 if rows:
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                    st.dataframe(pd.DataFrame(rows), width="stretch")
 
         # Tab 2: 全员空闲
         with tabs[2]:
-            st.plotly_chart(chart_fully_free_heatmap(free4d, n), use_container_width=True)
+            st.plotly_chart(chart_fully_free_heatmap(free4d, n), width="stretch")
             rows = [{"周次": f"第{w+1}周", "星期": DAY_NAMES[d], "节次": p+1,
                      "时间": f"{PERIOD_TIMES[p+1][0]}–{PERIOD_TIMES[p+1][1]}"}
                     for w in range(TOTAL_WEEKS) for d in range(7) for p in range(12)
                     if free4d[w, d, p] == n]
             if rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                st.dataframe(pd.DataFrame(rows), width="stretch")
             else:
                 st.info("无全员共同空闲时段")
 
@@ -1141,26 +1157,26 @@ def main():
         with tabs[3]:
             if "bubble" not in st.session_state.rendered_tabs:
                 st.session_state.rendered_tabs.add("bubble")
-            st.plotly_chart(chart_bubble(free4d, n), use_container_width=True)
+            st.plotly_chart(chart_bubble(free4d, n), width="stretch")
 
         # Tab 4: 负担分析
         with tabs[4]:
             if "burden" not in st.session_state.rendered_tabs:
                 st.session_state.rendered_tabs.add("burden")
-            st.plotly_chart(chart_person_busyload(all_occ), use_container_width=True)
+            st.plotly_chart(chart_person_busyload(all_occ), width="stretch")
 
         # Tab 5: 分组柱状
         with tabs[5]:
             if "grouped" not in st.session_state.rendered_tabs:
                 st.session_state.rendered_tabs.add("grouped")
-            st.plotly_chart(chart_grouped_bar(free4d, n), use_container_width=True)
+            st.plotly_chart(chart_grouped_bar(free4d, n), width="stretch")
 
         # Tab 6: 3D 曲面
         with tabs[6]:
-            w3d = st.slider("选择周次（或查看平均）", 0, TOTAL_WEEKS,
-                            0, format=lambda x: "17周平均" if x == 0 else f"第{x}周")
-            wk3d = None if w3d == 0 else w3d - 1
-            st.plotly_chart(chart_3d_surface(free4d, n, wk3d), use_container_width=True)
+            week_options = ["17周平均"] + [f"第{w}周" for w in range(1, TOTAL_WEEKS + 1)]
+            w3d_label = st.select_slider("选择周次（或查看平均）", options=week_options)
+            wk3d = None if w3d_label == "17周平均" else int(w3d_label[1:-1]) - 1
+            st.plotly_chart(chart_3d_surface(free4d, n, wk3d), width="stretch")
 
         # Tab 7: 报告 & 导出
         with tabs[7]:
@@ -1177,7 +1193,7 @@ def main():
                     data=report_md.encode("utf-8"),
                     file_name="课表分析报告.md",
                     mime="text/markdown",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             with col_b:
@@ -1187,7 +1203,7 @@ def main():
                     data=xlsx_bytes,
                     file_name="课表分析数据.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             with col_c:
@@ -1197,7 +1213,7 @@ def main():
                     data=csv_zip,
                     file_name="课表分析CSV.zip",
                     mime="application/zip",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             with col_d:
@@ -1207,7 +1223,7 @@ def main():
                     data=png_bytes,
                     file_name="热力图_17周平均.png",
                     mime="image/png",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             with col_e:
@@ -1217,7 +1233,7 @@ def main():
                     data=trend_png,
                     file_name="空闲率趋势图.png",
                     mime="image/png",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
     finally:
