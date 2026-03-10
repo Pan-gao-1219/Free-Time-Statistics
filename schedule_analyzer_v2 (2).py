@@ -213,44 +213,44 @@ def parse_xlsx(xlsx_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
         wb = load_workbook(xlsx_path, read_only=True, data_only=True)
         ws = wb.active
 
-        rows_iter = ws.iter_rows(values_only=True)
-        # 跳过第一行（可能是合并标题行）
-        try:
-            next(rows_iter)
-        except StopIteration:
-            wb.close()
-            return None, ["文件为空"]
+        # 自动扫描前5行寻找"上课时间"列（兼容有/无合并标题行的 xlsx）
+        all_rows = []
+        for row in ws.iter_rows(values_only=True):
+            all_rows.append(row)
+            if len(all_rows) >= 5:
+                # 一旦找到 header 就继续用 rows_iter 读剩余行
+                break
 
-        # 第二行寻找"上课时间"列
-        try:
-            header_row = next(rows_iter)
-        except StopIteration:
-            wb.close()
-            return None, ["表头行不足"]
-
-        for i, cell in enumerate(header_row):
-            if cell is not None and "上课时间" in str(cell):
-                col_idx = i
+        header_row_idx = None
+        for ri, row in enumerate(all_rows):
+            for ci, cell in enumerate(row):
+                if cell is not None and "上课时间" in str(cell):
+                    col_idx = ci
+                    header_row_idx = ri
+                    break
+            if col_idx is not None:
                 break
 
         if col_idx is None:
             wb.close()
-            return None, ["未找到'上课时间'列"]
+            return None, [f"未找到'上课时间'列（已扫描前{len(all_rows)}行）"]
 
         unmatched = 0
-        for row in rows_iter:
+
+        def _process_row(row):
+            nonlocal unmatched
             if col_idx >= len(row):
-                continue
+                return
             cell = row[col_idx]
             if cell is None:
-                continue
+                return
             for part in str(cell).split(";"):
                 part = part.strip()
                 m = SLOT_RE.search(part)
                 if not m:
                     if part and re.search(r'周[一二三四五六日]', part):
                         unmatched += 1
-                    continue
+                    return
                 day_name = m.group(1)
                 if day_name not in DAY_MAP:
                     continue
@@ -261,6 +261,13 @@ def parse_xlsx(xlsx_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
                     for p in periods:
                         if 1 <= p <= 12:
                             occ[wk - 1, day, p - 1] = True
+
+        # 处理已缓冲的数据行
+        for row in all_rows[header_row_idx + 1:]:
+            _process_row(row)
+        # 流式读取剩余行（节省内存）
+        for row in ws.iter_rows(min_row=len(all_rows) + 1, values_only=True):
+            _process_row(row)
 
         wb.close()
 
@@ -314,21 +321,26 @@ def parse_xls(xls_path: str) -> Tuple[Optional[np.ndarray], List[str]]:
         wb = xlrd.open_workbook(xls_path)
         ws = wb.sheet_by_index(0)
 
-        if ws.nrows < 2:
+        if ws.nrows < 1:
             return None, ["文件为空"]
 
-        # 跳过第一行（合并标题），第二行找"上课时间"列
-        header_row = [str(ws.cell_value(1, c)) for c in range(ws.ncols)]
-        for i, cell in enumerate(header_row):
-            if "上课时间" in cell:
-                col_idx = i
+        # 自动扫描前5行寻找"上课时间"列（兼容有/无合并标题行的 xls）
+        header_row_idx = None
+        for try_row in range(min(5, ws.nrows)):
+            for c in range(ws.ncols):
+                if "上课时间" in str(ws.cell_value(try_row, c)):
+                    col_idx = c
+                    header_row_idx = try_row
+                    break
+            if col_idx is not None:
                 break
 
         if col_idx is None:
-            return None, ["未找到'上课时间'列"]
+            return None, [f"未找到'上课时间'列（已扫描前{min(5,ws.nrows)}行）"]
 
+        data_start_row = header_row_idx + 1
         unmatched = 0
-        for r in range(2, ws.nrows):
+        for r in range(data_start_row, ws.nrows):
             cell_val = ws.cell_value(r, col_idx)
             if not cell_val:
                 continue
